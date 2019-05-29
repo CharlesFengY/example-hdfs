@@ -28,7 +28,7 @@ public class FailifyHelper {
                 .dockerImgName("failify/hadoop:1.0").dockerFileAddr("docker/Dockerfile", true)
                 .logDir("/hadoop/" + dir + "/logs").serviceType(ServiceType.JAVA).and()
             .withService("nn", "hadoop-base").initCmd("bin/hdfs namenode -bootstrapStandby")
-                .startCmd("bin/hdfs --daemon start zkfc && /bin/hdfs --daemon start namenode")
+                .startCmd("bin/hdfs --daemon start zkfc && bin/hdfs --daemon start namenode").tcpPort(50070)
                 .stopCmd("bin/hdfs --daemon stop namenode").and().nodeInstances(3, "nn", "nn", true)
             .withService("dn", "hadoop-base")
                 .startCmd("bin/hdfs --daemon start datanode").stopCmd("bin/hdfs --daemon stop datanode")
