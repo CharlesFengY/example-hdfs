@@ -20,12 +20,13 @@ public class FailifyHelper {
         String version = "3.1.2"; // this can be dynamically generated from maven metadata
         String dir = "hadoop-" + version;
         return Deployment.builder("example-hdfs")
-            .withService("zk").dockerImgName("zookeeper:3.4.14").disableClockDrift().and().withNode("zk1", "zk").and()
+            .withService("zk").dockerImg("failify/zk:3.4.14").dockerFile("docker/zk", true).disableClockDrift().and()
+            .withNode("zk1", "zk").and()
             .withService("hadoop-base")
                 .appPath("../hadoop-3.1.2-build/hadoop-dist/target/" + dir + ".tar.gz", "/hadoop", PathAttr.COMPRESSED)
                 .appPath("etc", "/hadoop/" + dir + "/etc").workDir("/hadoop/" + dir)
                 .env("HADOOP_HOME", "/hadoop/" + dir).env("HADOOP_HEAPSIZE_MAX", "1g")
-                .dockerImgName("failify/hadoop:1.0").dockerFileAddr("docker/Dockerfile", true)
+                .dockerImg("failify/hadoop:1.0").dockerFile("docker/Dockerfile", true)
                 .logDir("/hadoop/" + dir + "/logs").serviceType(ServiceType.JAVA).and()
             .withService("nn", "hadoop-base").initCmd("bin/hdfs namenode -bootstrapStandby")
                 .startCmd("bin/hdfs --daemon start zkfc && bin/hdfs --daemon start namenode").tcpPort(50070)
