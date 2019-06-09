@@ -21,7 +21,6 @@ public class FailifyHelper {
         String dir = "hadoop-" + version;
         return Deployment.builder("example-hdfs")
             .withService("zk").dockerImg("failify/zk:3.4.14").dockerFile("docker/zk", true).disableClockDrift().and()
-            .withNode("zk1", "zk").and()
             .withService("hadoop-base")
                 .appPath("../hadoop-3.1.2-build/hadoop-dist/target/" + dir + ".tar.gz", "/hadoop", PathAttr.COMPRESSED)
                 .appPath("etc", "/hadoop/" + dir + "/etc").workDir("/hadoop/" + dir)
@@ -35,8 +34,8 @@ public class FailifyHelper {
                 .startCmd("bin/hdfs --daemon start datanode").stopCmd("bin/hdfs --daemon stop datanode")
                 .and().nodeInstances(numOfDNs, "dn", "dn", true)
             .withService("jn", "hadoop-base")
-                .startCmd("bin/hdfs --daemon start journalnode").stopCmd("bin/hdfs --dae stop journalnode")
-                .and().nodeInstances(3, "jn", "jn", false)
+                .startCmd("bin/hdfs --daemon start journalnode").stopCmd("bin/hdfs --dae stop journalnode").and()
+            .nodeInstances(3, "jn", "jn", false).withNode("zk1", "zk").and()
             .node("nn1").initCmd("bin/hdfs namenode -format && bin/hdfs zkfc -formatZK").and().build();
     }
 
