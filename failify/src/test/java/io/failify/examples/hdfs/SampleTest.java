@@ -64,7 +64,6 @@ public class SampleTest {
         FailifyHelper failifyHelper = new FailifyHelper(3, NUM_OF_DNS);
         FailifyRunner runner = failifyHelper.start();
         failifyHelper.waitActive();
-        logger.info("The cluster is UP!");
 
         FileSystem fs = failifyHelper.getFileSystem();
 
