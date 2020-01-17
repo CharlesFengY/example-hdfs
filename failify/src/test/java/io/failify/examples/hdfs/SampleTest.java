@@ -1,35 +1,25 @@
 package io.failify.examples.hdfs;
 
+import com.google.common.base.Supplier;
 import io.failify.FailifyRunner;
 import io.failify.exceptions.RuntimeEngineException;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.hdfs.AppendTestUtil;
-import org.apache.hadoop.hdfs.DFSConfigKeys;
-import org.apache.hadoop.hdfs.DFSTestUtil;
-import org.apache.hadoop.hdfs.DistributedFileSystem;
-import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
-import org.apache.hadoop.hdfs.protocolPB.DatanodeProtocolClientSideTranslatorPB;
-import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeDescriptor;
-import org.apache.hadoop.hdfs.server.datanode.DataNode;
-import org.apache.hadoop.hdfs.server.namenode.NameNode;
-import org.apache.hadoop.hdfs.server.namenode.ha.HATestUtil;
+import org.apache.hadoop.hdfs.*;
 import org.apache.hadoop.io.IOUtils;
+import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.junit.AfterClass;
-import org.junit.BeforeClass;
 import org.junit.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
-import java.sql.*;
+import java.security.PrivilegedExceptionAction;
 import java.util.concurrent.TimeoutException;
 
 import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.fail;
 
 public class SampleTest {
     private static final Logger logger = LoggerFactory.getLogger(SampleTest.class);
@@ -53,7 +43,8 @@ public class SampleTest {
      * and a later retry will succeed.
      */
     @Test
-    public void testFailoverRightBeforeCommitSynchronization() throws IOException, RuntimeEngineException {
+    public void testFailoverRightBeforeCommitSynchronization()
+            throws IOException, RuntimeEngineException, InterruptedException, TimeoutException {
         final Configuration conf = new Configuration();
         // Disable permissions so that another user can recover the lease.
         conf.setBoolean(DFSConfigKeys.DFS_PERMISSIONS_ENABLED_KEY, false);
@@ -62,89 +53,95 @@ public class SampleTest {
         FSDataOutputStream stm = null;
 
         FailifyHelper failifyHelper = new FailifyHelper(3, NUM_OF_DNS);
+        failifyHelper.addInstrumentablePath("/share/hadoop/hdfs/hadoop-hdfs-3.1.2.jar");
+        failifyHelper.getDeploymentBuiler().node("nn1")
+                .stackTrace("e1", "org.apache.hadoop.hdfs.server.namenode.NameNodeRpcServer.commitBlockSynchronization")
+                .stackTrace("e2", "org.apache.hadoop.hdfs.server.namenode.FSNamesystem.commitBlockSynchronization")
+                .stackTrace("e3",
+                          "org.apache.hadoop.hdfs.server.namenode.FSNamesystem.commitBlockSynchronization,"
+                        + "org.apache.hadoop.hdfs.server.namenode.FSNamesystem.checkOperation,"
+                        + "org.apache.hadoop.hdfs.server.namenode.ha.StandbyState.checkOperation")
+                .and().testCaseEvents("t1").runSeq("e1 * t1 * e2 * e3");
         FailifyRunner runner = failifyHelper.start();
         failifyHelper.waitActive();
 
-        FileSystem fs = failifyHelper.getFileSystem();
+        try {
+            failifyHelper.transitionToActive(1);
+            Thread.sleep(500);
 
-        fs.create(new Path("/test.txt"));
+            FileSystem fs = failifyHelper.getFileSystem();
 
-        logger.info(" {} ", fs.listFiles(new Path("/"), false).next());
-        runner.stop();
+            stm = fs.create(TEST_PATH);
 
-//        final MiniDFSCluster cluster = newMiniCluster(conf, 3);
-//        try {
-//            cluster.waitActive();
-//            cluster.transitionToActive(0);
-//            Thread.sleep(500);
-//
-//            LOG.info("Starting with NN 0 active");
-//            FileSystem fs = HATestUtil.configureFailoverFs(cluster, conf);
-//            stm = fs.create(TEST_PATH);
-//
-//            // write a half block
-//            AppendTestUtil.write(stm, 0, BLOCK_SIZE / 2);
-//            stm.hflush();
-//
-//            // Look into the block manager on the active node for the block
-//            // under construction.
-//
-//            NameNode nn0 = cluster.getNameNode(0);
-//            ExtendedBlock blk = DFSTestUtil.getFirstBlock(fs, TEST_PATH);
-//            DatanodeDescriptor expectedPrimary =
-//                    DFSTestUtil.getExpectedPrimaryNode(nn0, blk);
-//            LOG.info("Expecting block recovery to be triggered on DN " +
-//                    expectedPrimary);
-//
-//            // Find the corresponding DN daemon, and spy on its connection to the
-//            // active.
-//            DataNode primaryDN = cluster.getDataNode(expectedPrimary.getIpcPort());
-//            DatanodeProtocolClientSideTranslatorPB nnSpy =
-//                    InternalDataNodeTestUtils.spyOnBposToNN(primaryDN, nn0);
-//
-//            // Delay the commitBlockSynchronization call
-//            DelayAnswer delayer = new DelayAnswer(LOG);
-//            Mockito.doAnswer(delayer).when(nnSpy).commitBlockSynchronization(
-//                    Mockito.eq(blk),
-//                    Mockito.anyLong(), // new genstamp
-//                    Mockito.anyLong(), // new length
-//                    Mockito.eq(true), // close file
-//                    Mockito.eq(false), // delete block
-//                    Mockito.any(),  // new targets
-//                    Mockito.any()); // new target storages
-//
-//            DistributedFileSystem fsOtherUser = createFsAsOtherUser(cluster, conf);
-//            assertFalse(fsOtherUser.recoverLease(TEST_PATH));
-//
-//            LOG.info("Waiting for commitBlockSynchronization call from primary");
-//            delayer.waitForCall();
-//
-//            LOG.info("Failing over to NN 1");
-//
-//            cluster.transitionToStandby(0);
-//            cluster.transitionToActive(1);
-//
-//            // Let the commitBlockSynchronization call go through, and check that
-//            // it failed with the correct exception.
-//            delayer.proceed();
-//            delayer.waitForResult();
-//            Throwable t = delayer.getThrown();
-//            if (t == null) {
-//                fail("commitBlockSynchronization call did not fail on standby");
-//            }
-//            GenericTestUtils.assertExceptionContains(
-//                    "Operation category WRITE is not supported",
-//                    t);
-//
-//            // Now, if we try again to recover the block, it should succeed on the new
-//            // active.
-//            loopRecoverLease(fsOtherUser, TEST_PATH);
-//
-//            AppendTestUtil.check(fs, TEST_PATH, BLOCK_SIZE/2);
-//        } finally {
-//            IOUtils.closeStream(stm);
-//            cluster.shutdown();
-//            runner.stop();
-//        }
+            // write a half block
+            AppendTestUtil.write(stm, 0, BLOCK_SIZE / 2);
+            stm.hflush();
+
+            DistributedFileSystem fsOtherUser = createFsAsOtherUser(failifyHelper, conf);
+            assertFalse(fsOtherUser.recoverLease(TEST_PATH));
+
+            failifyHelper.runner().runtime().enforceOrder("t1", () -> {
+                LOG.info("Failing over to NN 1");
+
+                failifyHelper.transitionToStandby(1);
+                failifyHelper.transitionToActive(2);
+            });
+
+            failifyHelper.runner().runtime().waitForRunSequenceCompletion(30);
+
+            loopRecoverLease(fsOtherUser, TEST_PATH);
+
+            AppendTestUtil.check(fs, TEST_PATH, BLOCK_SIZE/2);
+        } finally {
+            IOUtils.closeStream(stm);
+            runner.stop();
+        }
+    }
+
+    private DistributedFileSystem createFsAsOtherUser(
+            final FailifyHelper failifyHelper, final Configuration conf)
+            throws IOException, InterruptedException {
+        return (DistributedFileSystem) UserGroupInformation.createUserForTesting(
+                "otheruser", new String[] { "othergroup"})
+                .doAs(new PrivilegedExceptionAction<FileSystem>() {
+                    @Override
+                    public FileSystem run() throws Exception {
+                        return failifyHelper.getFileSystem();
+                    }
+                });
+    }
+
+    /**
+     * Try to recover the lease on the given file for up to 60 seconds.
+     * @param fsOtherUser the filesystem to use for the recoverLease call
+     * @param testPath the path on which to run lease recovery
+     * @throws TimeoutException if lease recover does not succeed within 60
+     * seconds
+     * @throws InterruptedException if the thread is interrupted
+     */
+    private static void loopRecoverLease(
+            final FileSystem fsOtherUser, final Path testPath)
+            throws TimeoutException, InterruptedException {
+        try {
+            GenericTestUtils.waitFor(new Supplier<Boolean>() {
+                @Override
+                public Boolean get() {
+                    boolean success;
+                    try {
+                        success = ((DistributedFileSystem)fsOtherUser)
+                                .recoverLease(testPath);
+                    } catch (IOException e) {
+                        throw new RuntimeException(e);
+                    }
+                    if (!success) {
+                        LOG.info("Waiting to recover lease successfully");
+                    }
+                    return success;
+                }
+            }, 1000, 60000);
+        } catch (TimeoutException e) {
+            throw new TimeoutException("Timed out recovering lease for " +
+                    testPath);
+        }
     }
 }

@@ -1,6 +1,5 @@
 package io.failify.examples.hdfs;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.squareup.okhttp.OkHttpClient;
 import com.squareup.okhttp.Request;
 import io.failify.FailifyRunner;
@@ -10,16 +9,8 @@ import io.failify.dsl.entities.PortType;
 import io.failify.dsl.entities.ServiceType;
 import io.failify.exceptions.RuntimeEngineException;
 import io.failify.execution.CommandResults;
-import io.failify.execution.ULimit;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
-import org.apache.hadoop.hdfs.DFSClient;
-import org.apache.hadoop.hdfs.DFSUtilClient;
-import org.apache.hadoop.hdfs.MiniDFSCluster;
-import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
-import org.apache.hadoop.hdfs.protocol.HdfsConstants;
-import org.apache.hadoop.hdfs.server.datanode.DataNodeTestUtils;
-import org.apache.hadoop.util.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -39,13 +30,32 @@ public class FailifyHelper {
     private int numOfNNs;
     private FailifyRunner runner;
     private Deployment deployment;
+    private Deployment.Builder deploymentBuiler;
 
     public FailifyHelper(int numOfNNs, int numOfDNs) {
         this.numOfDNs = numOfDNs;
         this.numOfNNs = numOfNNs;
+        createDeployment();
     }
 
-    public FailifyRunner start() throws RuntimeEngineException {
+    public Deployment.Builder getDeploymentBuiler() {
+        return deploymentBuiler;
+    }
+
+    private String getHadoopHomeDir() {
+        String version = "3.1.2"; // this can be dynamically generated from maven metadata
+        String dir = "hadoop-" + version;
+        return "/hadoop/" + dir;
+    }
+
+    public void addInstrumentablePath(String path) {
+        String[] services = {"hadoop-base", "nn", "dn", "jn"};
+        for (String service: services) {
+            deploymentBuiler.service(service).instrumentablePath(getHadoopHomeDir() + path).and();
+        }
+    }
+
+    private void createDeployment() {
         String fsAddress = numOfNNs > 1 ? CLUSTER_NAME : "nn1:" + NN_RPC_PORT;
         String hdfsSiteFileName = numOfNNs > 1 ? "hdfs-site-ha.xml" : "hdfs-site.xml";
         String version = "3.1.2"; // this can be dynamically generated from maven metadata
@@ -53,25 +63,25 @@ public class FailifyHelper {
         Deployment.Builder builder = Deployment.builder("example-hdfs")
             .withService("hadoop-base")
                 .appPath("../hadoop-3.1.2-build/hadoop-dist/target/" + dir + ".tar.gz", "/hadoop", PathAttr.COMPRESSED)
-                .appPath("etc", "/hadoop/" + dir + "/etc").workDir("/hadoop/" + dir)
-                .appPath("etc/" + hdfsSiteFileName, "/hadoop/" + dir + "/etc/hadoop/hdfs-site.xml",
+                .appPath("etc", getHadoopHomeDir() + "/etc").workDir(getHadoopHomeDir())
+                .appPath("etc/" + hdfsSiteFileName, getHadoopHomeDir() + "/etc/hadoop/hdfs-site.xml",
                         new HashMap<String, String>() {{
                             put("NN_STRING", getNNString());
                             put("NN_ADDRESSES", getNNAddresses());
                         }})
-                .appPath("etc/hadoop/core-site.xml", "/hadoop/" + dir + "/etc/hadoop/core-site.xml",
+                .appPath("etc/hadoop/core-site.xml", getHadoopHomeDir() + "/etc/hadoop/core-site.xml",
                         new HashMap<String, String>() {{ put("CLUSTER_ADDRESS", fsAddress); }})
-                .env("HADOOP_HOME", "/hadoop/" + dir).env("HADOOP_HEAPSIZE_MAX", "1g")
+                .env("HADOOP_HOME", getHadoopHomeDir()).env("HADOOP_HEAPSIZE_MAX", "1g")
                 .dockerImg("failify/hadoop:1.0").dockerFile("docker/Dockerfile", true)
-                .libPath("/hadoop/" + dir + "/share/hadoop/**/*.jar")
-                .logDir("/hadoop/" + dir + "/logs").serviceType(ServiceType.JAVA).and();
+                .libPath(getHadoopHomeDir() + "/share/hadoop/**/*.jar")
+                .logDir(getHadoopHomeDir() + "/logs").serviceType(ServiceType.JAVA).and();
 
-        addRuntimeLibsToDeployment(builder, "/hadoop/" + dir);
+        addRuntimeLibsToDeployment(builder, getHadoopHomeDir());
 
         builder.withService("nn", "hadoop-base").tcpPort(NN_HTTP_PORT, NN_RPC_PORT)
                 .initCmd("bin/hdfs namenode -bootstrapStandby")
-                .startCmd((numOfNNs > 1 ? "bin/hdfs --daemon start zkfc && " : "") + "bin/hdfs --daemon start namenode")
-                .stopCmd("bin/hdfs --daemon stop namenode" + (numOfNNs > 1 ?" && bin/hdfs --daemon stop zkfc" : "")).and()
+                .startCmd("bin/hdfs --daemon start namenode")
+                .stopCmd("bin/hdfs --daemon stop namenode").and()
                 .nodeInstances(numOfNNs, "nn", "nn", true)
             .withService("dn", "hadoop-base")
                 .startCmd("bin/hdfs --daemon start datanode").stopCmd("bin/hdfs --daemon stop datanode")
@@ -79,15 +89,18 @@ public class FailifyHelper {
             .node("nn1").stackTrace("e1", "test.armin.balalaie.io.facebook").and().runSeq("e1");
 
         if (numOfNNs > 1) {
-            builder.withService("zk").dockerImg("failify/zk:3.4.14").dockerFile("docker/zk", true)
-                    .disableClockDrift().and().withNode("zk1", "zk").and()
-                    .withService("jn", "hadoop-base").startCmd("bin/hdfs --daemon start journalnode")
+            builder.withService("jn", "hadoop-base").startCmd("bin/hdfs --daemon start journalnode")
                     .stopCmd("bin/hdfs --daemon stop journalnode").and().nodeInstances(3, "jn", "jn", false);
         }
 
-        builder.node("nn1").initCmd("bin/hdfs namenode -format" + (numOfNNs > 1 ? " && bin/hdfs zkfc -formatZK" : "")).and();
+        builder.node("nn1").initCmd("bin/hdfs namenode -format").and();
 
-        deployment = builder.build();
+        deploymentBuiler = builder;
+    }
+
+    public FailifyRunner start() throws RuntimeEngineException {
+
+        deployment = deploymentBuiler.build();
         runner = deployment.start();
         startNodesInOrder();
         return runner;
@@ -267,4 +280,19 @@ public class FailifyHelper {
         }
     }
 
+    public void transitionToActive(int nnNum) throws RuntimeEngineException {
+        logger.info("Transitioning nn{} to ACTIVE", nnNum);
+        CommandResults res = runner.runtime().runCommandInNode("nn" + nnNum, "bin/hdfs haadmin -transitionToActive nn" + nnNum);
+        if (res.exitCode() != 0) {
+            throw new RuntimeException("Error while transitioning nn" + nnNum + " to ACTIVE.\n" + res.stdErr());
+        }
+    }
+
+    public void transitionToStandby(int nnNum) throws RuntimeEngineException {
+        logger.info("Transitioning nn{} to STANDBY", nnNum);
+        CommandResults res = runner.runtime().runCommandInNode("nn" + nnNum, "bin/hdfs haadmin -transitionToStandby nn" + nnNum);
+        if (res.exitCode() != 0) {
+            throw new RuntimeException("Error while transitioning nn" + nnNum + " to STANDBY.\n" + res.stdErr());
+        }
+    }
 }
